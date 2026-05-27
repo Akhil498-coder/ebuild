@@ -1,12 +1,14 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 EoS Project
 import unittest
-import time
+
 class TestebuildPerformance(unittest.TestCase):
-    def test_latency_sla(self):
-        print("Testing performance SLA for ebuild...")
-        t0 = time.perf_counter()
-        _ = sum(i*i for i in range(1000))
-        t1 = time.perf_counter()
-        print(f"Operation took: {(t1 - t0)*1e6:.2f} microseconds")
-        self.assertTrue(True)
+    import time
+    def test_dependency_resolution_latency(self):
+        import time
+        start = time.perf_counter()
+        # Simulate resolving dependency tree for 500 modules
+        deps = {i: [i+1, i+2] for i in range(500)}
+        for i in range(500):
+            _ = deps.get(i)
+        end = time.perf_counter()
+        latency_ms = (end - start) * 1000
+        assert latency_ms < 2.0, f"Dependency resolution latency {latency_ms:.2f}ms exceeds 2ms SLA"
