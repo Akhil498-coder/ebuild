@@ -1,59 +1,105 @@
-# ebuild — Build System
+# ebuild — Unified Embedded Build System
 
-[![Production Ready](https://img.shields.io/badge/Status-Production%20Ready-success?style=for-the-badge)](https://github.com/embeddedos-org/ebuild)
-[![Build Status](https://img.shields.io/badge/Build-Passing-success?style=for-the-badge)](https://github.com/embeddedos-org/ebuild/actions)
-[![Test Coverage](https://img.shields.io/badge/Coverage-100%25-success?style=for-the-badge)](https://github.com/embeddedos-org/ebuild)
-[![GPS API](https://img.shields.io/badge/GPS%20API-Integrated-blue?style=for-the-badge)](https://github.com/embeddedos-org/ebuild)
+[![CI](https://github.com/embeddedos-org/ebuild/actions/workflows/ci.yml/badge.svg)](https://github.com/embeddedos-org/ebuild/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/embeddedos-org/ebuild/actions/workflows/codeql.yml/badge.svg)](https://github.com/embeddedos-org/ebuild/actions/workflows/codeql.yml)
+[![Scorecard](https://github.com/embeddedos-org/ebuild/actions/workflows/scorecard.yml/badge.svg)](https://github.com/embeddedos-org/ebuild/actions/workflows/scorecard.yml)
+[![Release](https://github.com/embeddedos-org/ebuild/actions/workflows/release.yml/badge.svg)](https://github.com/embeddedos-org/ebuild/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Next-Gen Embedded OS Build Tool. Engineered to meet the highest standards of production readiness, performance, and security.
+ebuild is a unified embedded build system written in Python. You describe a
+project in a single `build.yaml`; ebuild resolves the dependency and toolchain
+graph and drives an underlying build backend, then extends into firmware and
+system-image workflows for embedded targets. It is part of the
+[EmbeddedOS (EoS)](https://github.com/embeddedos-org) ecosystem. (`ebuild` here
+is the EoS build tool and is unrelated to Gentoo's ebuild format.)
 
----
+## ⚡ Quick Demo
 
-## 🚀 World-Class Simulation & Analytics
+New here? See **[demo.md](demo.md)** — a 5-minute, self-contained walkthrough
+that lists the prerequisites (Python, `gcc`, and the `ninja` **pip** package),
+then builds and runs a tiny "thermostat" C program end-to-end via `ebuild
+build`. A troubleshooting appendix covers no-root / PEP 668 environments and
+building without a system compiler.
 
-### Real-Time Emulation Dashboard
-Below is the real-time simulation dashboard generated from our production test suite. It displays comprehensive latency profiles, coverage heatmaps, and scheduling performance.
+## Features
 
-![Emulation Dashboard](docs/screenshots/ebuild_simulation.png)
+Observed in the source tree:
 
-### Unified Organization Health Matrix
-We continuously benchmark ebuild — Build System against the entire EmbeddedOS ecosystem to ensure flawless interoperability.
+- **Backend dispatch** — auto-detects the project's build system and dispatches
+  to CMake, Make, Meson, Cargo, or Kbuild, or generates a Ninja build
+  (`ebuild/build/dispatch.py`, `ebuild/build/ninja_backend.py`). Per the package
+  metadata, its target scope also includes Buildroot, Zephyr, FreeRTOS, and
+  NuttX.
+- **Package graph** — install and list project packages
+  (`ebuild add`, `ebuild list-packages`).
+- **Firmware & flashing** — build RTOS firmware and flash images to targets
+  (`ebuild firmware`, `ebuild flash`; `ebuild/firmware/`).
+- **System images** — root filesystem, kernel, and disk-image assembly
+  (`ebuild system`; `ebuild/system/`).
+- **Project scaffolding** — generate projects and boards from templates
+  (`ebuild new`, `ebuild generate-project`, `ebuild generate-board`,
+  `ebuild generate-boot`).
+- **Layers & recipes** — reusable board/OS composition under `layers/` and
+  `recipes/`.
 
-![Overall Dashboard](docs/screenshots/overall_dashboard.png)
+## What's inside
 
----
+| Path | Contents |
+|------|----------|
+| `ebuild/` | The Python package: `cli/`, `build/`, `core/`, `system/`, `firmware/`, `deps/`, `packages/`, `plugins/`, `eos_ai/` |
+| `core/` | Native support components (e.g. `eboot/`) |
+| `examples/` | `hello_world`, `linux_image`, `multi_target`, `rtos_firmware`, `cortex_r5_safety`, `eradar360`, `with_packages` |
+| `templates/` | Project/board templates used by the generators |
+| `recipes/`, `layers/` | Reusable build recipes and board/OS layers |
+| `hardware/` | Board/hardware definitions |
+| `sdk/` | SDK generation support |
+| `tools/` | Helper scripts |
+| `docs/` | Documentation (published with MkDocs) |
 
-## 🎬 Product Marketing Video (App Store Proof of Production)
+## Install
 
-Experience ebuild — Build System in action! Watch our high-fidelity product demonstration and marketing video:
+Requires Python 3.8+.
 
-> 🎥 **[Watch the ebuild — Build System Product Video](docs/videos/ebuild_marketing.mp4)**
-
----
-
-## 🛠️ Production-Grade Architecture
-
-- **Domain**: C • CMake • Cross-Platform
-- **GPS Integration**: Production-grade geolocation and time synchronization APIs integrated.
-- **Benchmarks**: Outperforms leading industry standards including **Bazel, Yocto, BitBake**.
-
----
-
-## 🧪 Comprehensive Test Suite
-
-This repository features **100% test coverage** across four critical categories:
-1. **Unit Tests**: Full functional coverage of core components.
-2. **Functional E2E Tests**: End-to-end integration and boundary input robustness.
-3. **Performance Benchmarks**: Nanosecond-precision latency profiling.
-4. **Hardware Simulation**: High-fidelity peripheral and register emulation.
-
-To run the entire suite locally:
 ```bash
-python run_all_tests.py
+pip install -e .        # from the repo root
+# or:
+./install.sh            # puts the 'ebuild' command on your PATH
+./install.sh --check    # verify the installation
 ```
 
----
+Runtime dependencies (`click`, `pyyaml`, `ninja`) are installed automatically.
+Note the `ninja` **pip package** is required — a system `ninja` binary alone is
+not enough, because ebuild invokes `python -m ninja`.
 
-## 📜 License & Compliance
+## Usage
 
-Licensed under the MIT License. Aligned with ISO/IEC 25000 software quality standards.
+```bash
+ebuild info             # show what ebuild parsed from build.yaml
+ebuild build            # resolve and build (auto-detects the backend)
+ebuild clean            # remove build artifacts
+ebuild --version
+```
+
+Additional commands: `configure`, `install`, `add`, `list-packages`,
+`pipeline`, `system`, `firmware`, `flash`, `new`, `generate-project`,
+`generate-board`, `generate-boot`, `analyze`, `setup`, and the `repos` group
+(`status`, `update`, `set-url`, `set-branch`, `link`, `unlink`). Run
+`ebuild --help` for the full list.
+
+## Test
+
+```bash
+pip install -e ".[dev]"
+pytest                  # configuration in pytest.ini
+```
+
+## Documentation
+
+Docs live under `docs/` and are published with MkDocs (`mkdocs.yml`):
+<https://embeddedos-org.github.io/ebuild/>.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+Part of [embeddedos-org](https://github.com/embeddedos-org).
