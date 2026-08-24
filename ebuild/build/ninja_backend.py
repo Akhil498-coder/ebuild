@@ -75,8 +75,15 @@ class NinjaBackend:
             "",
         ]
 
+        toolchain_cflags = list(getattr(self.toolchain, "cflags", []))
+        toolchain_ldflags = list(getattr(self.toolchain, "ldflags", []))
+        sysroot = getattr(self.toolchain, "sysroot", None)
+        if sysroot:
+            toolchain_cflags.append(f"--sysroot={sysroot}")
+            toolchain_ldflags.append(f"--sysroot={sysroot}")
+
         for target in self.config.targets:
-            cflags = list(target.cflags)
+            cflags = toolchain_cflags + list(target.cflags)
             for inc in target.includes:
                 cflags.append(f"-I{inc}")
             for define in target.defines:
@@ -100,7 +107,7 @@ class NinjaBackend:
                 lines.append("")
 
             if target.target_type == "executable":
-                ldflags = list(target.ldflags)
+                ldflags = toolchain_ldflags + list(target.ldflags)
                 libs = []
                 dep_archives = []
                 for pkg_name in target.uses:
@@ -150,17 +157,29 @@ class NinjaBackend:
         commands = []
         source_dir = str(self.config.source_dir.resolve())
 
+        toolchain_cflags = list(getattr(self.toolchain, "cflags", []))
+        sysroot = getattr(self.toolchain, "sysroot", None)
+        if sysroot:
+            toolchain_cflags.append(f"--sysroot={sysroot}")
+
         for target in self.config.targets:
-            cflags = list(target.cflags)
+            cflags = toolchain_cflags + list(target.cflags)
             for inc in target.includes:
                 cflags.append(f"-I{inc}")
             for define in target.defines:
                 cflags.append(f"-D{define}")
 
+            for pkg_name in target.uses:
+                pkg = self.package_paths.get(pkg_name)
+                if pkg:
+                    for inc_dir in pkg.include_dirs:
+                        cflags.append(f"-I{inc_dir}")
+
+            flags_str = f" {' '.join(cflags)}" if cflags else ""
             for src in target.sources:
                 commands.append({
                     "directory": source_dir,
-                    "command": f"{self.toolchain.cc} {' '.join(cflags)} -c {src}",
+                    "command": f"{self.toolchain.cc}{flags_str} -c {src}",
                     "file": src,
                 })
 
