@@ -69,6 +69,10 @@ class NinjaBackend:
             "  command = $cc $ldflags $in -o $out $libs",
             "  description = LINK $out",
             "",
+            "rule link_shared",
+            "  command = $cc -shared $ldflags $in -o $out $libs",
+            "  description = LINK_SHARED $out",
+            "",
             "rule ar_rule",
             "  command = $ar rcs $out $in",
             "  description = AR $out",
@@ -136,7 +140,7 @@ class NinjaBackend:
                 else:
                     ext = ".so"
                 out = str(self.build_dir / f"lib{target.name}{ext}")
-                rule = "ar_rule" if target.target_type == "static_library" else "link"
+                rule = "ar_rule" if target.target_type == "static_library" else "link_shared"
                 lines.append(
                     f"build {out}: {rule} {' '.join(obj_files)}"
                 )
