@@ -67,11 +67,11 @@ endif()
 
 # --- Auto-resolve eBoot source directory ---
 if(NOT EBOOT_SOURCE_DIR OR EBOOT_SOURCE_DIR STREQUAL "")
-    # 1. Check sibling directory ../eos (standalone repo — preferred)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../eos/CMakeLists.txt")
-        get_filename_component(EBOOT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../eos" ABSOLUTE)
-    # Also try mixed-case eBoot (canonical GitHub name)
-    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../eBoot/CMakeLists.txt")
+    # 1. Check sibling directory ../eBoot (canonical GitHub name).
+    # This block used to test ../eos first and point EBOOT_SOURCE_DIR at it,
+    # which always won because ../eos exists — so the eos repository was added
+    # twice and every one of its targets collided with itself.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../eBoot/CMakeLists.txt")
         get_filename_component(EBOOT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../eBoot" ABSOLUTE)
     # Also try lowercase eboot
     elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../eboot/CMakeLists.txt")
