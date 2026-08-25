@@ -69,6 +69,11 @@ class DependencyGraph:
         """Return nodes in build order (dependencies first).
 
         Uses Kahn's algorithm. Raises CycleError if a cycle exists.
+
+        Independent targets are emitted in sorted name order so the result
+        is stable across processes. Walking ``self._nodes`` (a set) directly
+        made ``ebuild info`` and generated ``build.ninja`` files change
+        between runs even when the graph had not.
         """
         in_degree: Dict[str, int] = {n: 0 for n in self._nodes}
         reverse_adj: Dict[str, Set[str]] = defaultdict(set)
@@ -78,8 +83,10 @@ class DependencyGraph:
                 reverse_adj[dep].add(dependent)
                 in_degree[dependent] = in_degree.get(dependent, 0) + 1
 
+        # Ready nodes must be sorted: set iteration order is not part of
+        # the language spec, and dependents are already sorted below.
         queue: deque[str] = deque()
-        for node in self._nodes:
+        for node in sorted(self._nodes):
             if in_degree.get(node, 0) == 0:
                 queue.append(node)
 
