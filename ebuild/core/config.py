@@ -203,7 +203,12 @@ def load_config(config_path: str | Path) -> ProjectConfig:
     targets = [_parse_target(t) for t in raw_targets]
 
     # validate dependency references
-    known_names = {t.name for t in targets}
+    known_names = set()
+    for t in targets:
+        if t.name in known_names:
+            raise ConfigError(f"Duplicate target name '{t.name}'.")
+        known_names.add(t.name)
+
     for t in targets:
         for dep in t.depends:
             if dep not in known_names:
