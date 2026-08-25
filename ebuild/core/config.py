@@ -53,7 +53,9 @@ class TargetConfig:
                 f"Must be one of {self.VALID_TYPES}."
             )
         if not self.sources:
-            raise ConfigError(f"Target '{self.name}' must list at least one source file.")
+            raise ConfigError(
+                f"Target '{self.name}' must list at least one source file."
+            )
 
 
 @dataclass
@@ -95,23 +97,34 @@ def _parse_target(raw: Any) -> TargetConfig:
     """Parse a single target dictionary into a TargetConfig."""
     if not isinstance(raw, dict):
         raise ConfigError(
-            f"Invalid target definition: expected a YAML mapping, got {type(raw).__name__}."
+            f"Invalid target definition: expected a YAML mapping, "
+            f"got {type(raw).__name__}."
         )
 
     target_name = raw.get("name", "")
+
     for field_name in (
-        "sources", "includes", "cflags", "ldflags", "defines", "depends", "uses"
+        "sources",
+        "includes",
+        "cflags",
+        "ldflags",
+        "defines",
+        "depends",
+        "uses",
     ):
         value = raw.get(field_name, [])
+
         if not isinstance(value, list):
             label = target_name or "<unnamed>"
             raise ConfigError(
                 f"Target '{label}' field '{field_name}' must be a list."
             )
+
         if not all(isinstance(item, str) for item in value):
             label = target_name or "<unnamed>"
             raise ConfigError(
-                f"Target '{label}' field '{field_name}' must contain only strings."
+                f"Target '{label}' field '{field_name}' "
+                f"must contain only strings."
             )
 
     target = TargetConfig(
@@ -125,6 +138,7 @@ def _parse_target(raw: Any) -> TargetConfig:
         depends=raw.get("depends", []),
         uses=raw.get("uses", []),
     )
+
     target.validate()
     return target
 
@@ -151,10 +165,12 @@ def load_config(config_path: str | Path) -> ProjectConfig:
         A validated ProjectConfig instance.
 
     Raises:
-        ConfigError: If the config is missing required fields or has invalid values.
+        ConfigError: If the config is missing required fields or has
+            invalid values.
         FileNotFoundError: If the config file does not exist.
     """
     config_path = Path(config_path)
+
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
@@ -162,11 +178,15 @@ def load_config(config_path: str | Path) -> ProjectConfig:
         raw = yaml.safe_load(f)
 
     if not isinstance(raw, dict):
-        raise ConfigError(f"Invalid config file: expected a YAML mapping, got {type(raw).__name__}.")
+        raise ConfigError(
+            f"Invalid config file: expected a YAML mapping, "
+            f"got {type(raw).__name__}."
+        )
 
     # --- project section ---
     # Support both "project:" section format and flat format
     project_section = raw.get("project")
+
     if project_section and isinstance(project_section, dict):
         project_name = project_section.get("name")
         project_version = project_section.get("version", "0.0.0")
@@ -175,35 +195,56 @@ def load_config(config_path: str | Path) -> ProjectConfig:
         project_version = raw.get("version", "0.0.0")
 
     if not project_name:
-        raise ConfigError("Project 'name' is required (in 'project' section or top-level).")
+        raise ConfigError(
+            "Project 'name' is required "
+            "(in 'project' section or top-level)."
+        )
 
     # --- backend (optional) ---
     backend = raw.get("backend", "auto")
     backend_config = raw.get("backend_config", {})
+
     if not isinstance(backend_config, dict):
         raise ConfigError("'backend_config' must be a mapping.")
 
     # For system builds, pull from 'system' section
     if raw.get("system") and isinstance(raw["system"], dict):
         backend_config.update(raw["system"])
+
         if backend == "auto":
             backend = "system"
 
     # For cmake/make/meson builds, pull defines from config
     if raw.get("cmake") and isinstance(raw["cmake"], dict):
         backend_config.update(raw["cmake"])
+
         if backend == "auto":
             backend = "cmake"
 
     # --- targets section (optional for external build systems) ---
     raw_targets = raw.get("targets", [])
+
     if not isinstance(raw_targets, list):
         raise ConfigError("'targets' must be a list of target definitions.")
 
     targets = [_parse_target(t) for t in raw_targets]
 
+    # Target names must be unique.
+    target_names = [target.name for target in targets]
+    duplicates = {
+        name for name in target_names
+        if target_names.count(name) > 1
+    }
+
+    if duplicates:
+        duplicate_names = ", ".join(sorted(duplicates))
+        raise ConfigError(
+            f"Found duplicate target name(s): {duplicate_names}"
+        )
+
     # validate dependency references
     known_names = {t.name for t in targets}
+
     for t in targets:
         for dep in t.depends:
             if dep not in known_names:
@@ -214,19 +255,24 @@ def load_config(config_path: str | Path) -> ProjectConfig:
     # --- toolchain section (optional) ---
     toolchain = None
     raw_toolchain = raw.get("toolchain")
+
     if raw_toolchain and isinstance(raw_toolchain, dict):
         toolchain = _parse_toolchain(raw_toolchain)
 
     # --- packages section (optional, Phase 2) ---
     packages: List[PackageDep] = []
     raw_packages = raw.get("packages", [])
+
     if isinstance(raw_packages, list):
         for p in raw_packages:
             if isinstance(p, dict):
                 pkg_name = p.get("name", "")
                 pkg_version = p.get("version")
+
                 if pkg_name:
-                    packages.append(PackageDep(name=pkg_name, version=pkg_version))
+                    packages.append(
+                        PackageDep(name=pkg_name, version=pkg_version)
+                    )
 
     return ProjectConfig(
         name=project_name,
