@@ -214,6 +214,8 @@ def load_config(config_path: str | Path) -> ProjectConfig:
     # --- toolchain section (optional) ---
     toolchain = None
     raw_toolchain = raw.get("toolchain")
+    if raw_toolchain is not None and not isinstance(raw_toolchain, dict):
+        raise ConfigError("'toolchain' must be a mapping.")
     if raw_toolchain and isinstance(raw_toolchain, dict):
         toolchain = _parse_toolchain(raw_toolchain)
 
