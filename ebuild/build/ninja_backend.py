@@ -24,6 +24,12 @@ class PackagePaths:
     libraries: List[str] = field(default_factory=list)
 
 
+# Flags that already request position-independent code. If one of these is
+# present (or explicitly disabled with -fno-*) we must not add -fPIC again.
+_PIC_FLAGS = {"-fPIC", "-fpic", "-fPIE", "-fpie", "-fno-pic", "-fno-PIC",
+              "-fno-pie", "-fno-PIE"}
+
+
 class NinjaBackend:
     """Generate build.ninja from a ProjectConfig and resolved toolchain.
 
@@ -52,6 +58,39 @@ class NinjaBackend:
         self._write_ninja()
         self._write_compile_commands()
 
+    def _target_cflags(self, target) -> List[str]:
+        """Effective compile flags for *target*.
+
+        Combines toolchain cflags, sysroot, target-specific flags, include
+        dirs, defines and package include dirs. Shared library sources get
+        ``-fPIC`` appended (unless a PIC-related flag is already present)
+        because the ``link_shared`` rule links with ``-shared``; objects
+        without position-independent code fail that link on most 64-bit
+        targets ("recompile with -fPIC").
+        """
+        cflags = list(getattr(self.toolchain, "cflags", []))
+        sysroot = getattr(self.toolchain, "sysroot", None)
+        if sysroot:
+            cflags.append(f"--sysroot={sysroot}")
+
+        cflags.extend(target.cflags)
+        for inc in target.includes:
+            cflags.append(f"-I{inc}")
+        for define in target.defines:
+            cflags.append(f"-D{define}")
+
+        for pkg_name in target.uses:
+            pkg = self.package_paths.get(pkg_name)
+            if pkg:
+                for inc_dir in pkg.include_dirs:
+                    cflags.append(f"-I{inc_dir}")
+
+        if target.target_type == "shared_library":
+            if not any(flag in _PIC_FLAGS for flag in cflags):
+                cflags.append("-fPIC")
+
+        return cflags
+
     def _write_ninja(self) -> None:
         """Write the build.ninja file."""
         ninja_path = self.build_dir / "build.ninja"
@@ -79,25 +118,13 @@ class NinjaBackend:
             "",
         ]
 
-        toolchain_cflags = list(getattr(self.toolchain, "cflags", []))
         toolchain_ldflags = list(getattr(self.toolchain, "ldflags", []))
         sysroot = getattr(self.toolchain, "sysroot", None)
         if sysroot:
-            toolchain_cflags.append(f"--sysroot={sysroot}")
             toolchain_ldflags.append(f"--sysroot={sysroot}")
 
         for target in self.config.targets:
-            cflags = toolchain_cflags + list(target.cflags)
-            for inc in target.includes:
-                cflags.append(f"-I{inc}")
-            for define in target.defines:
-                cflags.append(f"-D{define}")
-
-            for pkg_name in target.uses:
-                pkg = self.package_paths.get(pkg_name)
-                if pkg:
-                    for inc_dir in pkg.include_dirs:
-                        cflags.append(f"-I{inc_dir}")
+            cflags = self._target_cflags(target)
 
             obj_files = []
             for src in target.sources:
@@ -161,23 +188,8 @@ class NinjaBackend:
         commands = []
         source_dir = str(self.config.source_dir.resolve())
 
-        toolchain_cflags = list(getattr(self.toolchain, "cflags", []))
-        sysroot = getattr(self.toolchain, "sysroot", None)
-        if sysroot:
-            toolchain_cflags.append(f"--sysroot={sysroot}")
-
         for target in self.config.targets:
-            cflags = toolchain_cflags + list(target.cflags)
-            for inc in target.includes:
-                cflags.append(f"-I{inc}")
-            for define in target.defines:
-                cflags.append(f"-D{define}")
-
-            for pkg_name in target.uses:
-                pkg = self.package_paths.get(pkg_name)
-                if pkg:
-                    for inc_dir in pkg.include_dirs:
-                        cflags.append(f"-I{inc_dir}")
+            cflags = self._target_cflags(target)
 
             flags_str = f" {' '.join(cflags)}" if cflags else ""
             for src in target.sources:
