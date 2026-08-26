@@ -13,6 +13,7 @@ import hashlib
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import Optional
 from urllib.request import urlretrieve
 
 from ebuild.packages.recipe import PackageRecipe
@@ -48,7 +49,15 @@ class PackageFetcher:
         """
         archive_path = self._download(recipe)
         if recipe.checksum:
-            self._verify_checksum(archive_path, recipe.checksum)
+            try:
+                self._verify_checksum(archive_path, recipe.checksum)
+            except FetchError:
+                # A mismatching archive is worthless, and _download()
+                # short-circuits on existence — leaving it in the cache made
+                # every later build fail with the same error until someone
+                # deleted it by hand. Drop it so a retry re-downloads.
+                archive_path.unlink(missing_ok=True)
+                raise
         extract_path = Path(extract_to)
         self._extract(archive_path, extract_path)
         return extract_path
@@ -63,14 +72,14 @@ class PackageFetcher:
                 f"(only http:// and https:// are allowed)"
             )
 
-        filename = self._archive_filename(recipe)
-        if not filename:
+        archive_path = self._archive_path(recipe)
+        if archive_path is None:
             raise FetchError(f"Could not derive filename from URL: {recipe.url}")
-        archive_path = self.download_dir / filename
 
         if archive_path.exists():
             return archive_path
 
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             urlretrieve(recipe.url, str(archive_path))
         except Exception as e:
@@ -136,7 +145,25 @@ class PackageFetcher:
         url_path = recipe.url.rstrip("/")
         return url_path.split("/")[-1]
 
+    def _archive_path(self, recipe: PackageRecipe) -> Optional[Path]:
+        """Cache path for *recipe*'s archive, namespaced by package slug.
+
+        The URL basename alone does not identify a package. GitHub tag
+        archives — ``.../archive/refs/tags/v2.9.3.tar.gz``, the form used by
+        ``recipes/littlefs.yaml`` — reduce to ``v2.9.3.tar.gz`` and carry no
+        package name, so two recipes sharing a tag would map to the same file
+        in the flat download directory. Namespacing by ``recipe.slug``
+        (name-version) keeps each package separate and matches the layout
+        PackageCache already uses.
+
+        Returns None when no filename can be derived from the URL.
+        """
+        filename = self._archive_filename(recipe)
+        if not filename:
+            return None
+        return self.download_dir / recipe.slug / filename
+
     def is_downloaded(self, recipe: PackageRecipe) -> bool:
         """Check if the archive is already downloaded."""
-        filename = self._archive_filename(recipe)
-        return (self.download_dir / filename).exists()
+        archive_path = self._archive_path(recipe)
+        return archive_path is not None and archive_path.exists()
