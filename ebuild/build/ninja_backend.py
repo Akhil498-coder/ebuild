@@ -52,6 +52,52 @@ class NinjaBackend:
         self._write_ninja()
         self._write_compile_commands()
 
+    def _get_toolchain_cflags(self) -> List[str]:
+        """Return toolchain-level cflags including sysroot.
+
+        Extracted to avoid duplicating sysroot/cflags logic across
+        _write_ninja() and _write_compile_commands().
+        """
+        cflags = list(getattr(self.toolchain, "cflags", []))
+        sysroot = getattr(self.toolchain, "sysroot", None)
+        if sysroot:
+            cflags.append(f"--sysroot={sysroot}")
+        return cflags
+
+    def _get_toolchain_ldflags(self) -> List[str]:
+        """Return toolchain-level ldflags including sysroot."""
+        ldflags = list(getattr(self.toolchain, "ldflags", []))
+        sysroot = getattr(self.toolchain, "sysroot", None)
+        if sysroot:
+            ldflags.append(f"--sysroot={sysroot}")
+        return ldflags
+
+    def _resolve_target_cflags(self, target) -> List[str]:
+        """Resolve all cflags for a target (toolchain + target + packages).
+
+        Combines toolchain flags, target-specific flags, include paths,
+        defines, and package include directories into a single list.
+
+        Args:
+            target: A TargetConfig with cflags, includes, defines, and uses.
+
+        Returns:
+            Combined list of compiler flags for this target.
+        """
+        cflags = self._get_toolchain_cflags() + list(target.cflags)
+        for inc in target.includes:
+            cflags.append(f"-I{inc}")
+        for define in target.defines:
+            cflags.append(f"-D{define}")
+
+        for pkg_name in target.uses:
+            pkg = self.package_paths.get(pkg_name)
+            if pkg:
+                for inc_dir in pkg.include_dirs:
+                    cflags.append(f"-I{inc_dir}")
+
+        return cflags
+
     def _write_ninja(self) -> None:
         """Write the build.ninja file."""
         ninja_path = self.build_dir / "build.ninja"
@@ -79,25 +125,10 @@ class NinjaBackend:
             "",
         ]
 
-        toolchain_cflags = list(getattr(self.toolchain, "cflags", []))
-        toolchain_ldflags = list(getattr(self.toolchain, "ldflags", []))
-        sysroot = getattr(self.toolchain, "sysroot", None)
-        if sysroot:
-            toolchain_cflags.append(f"--sysroot={sysroot}")
-            toolchain_ldflags.append(f"--sysroot={sysroot}")
+        toolchain_ldflags = self._get_toolchain_ldflags()
 
         for target in self.config.targets:
-            cflags = toolchain_cflags + list(target.cflags)
-            for inc in target.includes:
-                cflags.append(f"-I{inc}")
-            for define in target.defines:
-                cflags.append(f"-D{define}")
-
-            for pkg_name in target.uses:
-                pkg = self.package_paths.get(pkg_name)
-                if pkg:
-                    for inc_dir in pkg.include_dirs:
-                        cflags.append(f"-I{inc_dir}")
+            cflags = self._resolve_target_cflags(target)
 
             obj_files = []
             for src in target.sources:
@@ -161,23 +192,8 @@ class NinjaBackend:
         commands = []
         source_dir = str(self.config.source_dir.resolve())
 
-        toolchain_cflags = list(getattr(self.toolchain, "cflags", []))
-        sysroot = getattr(self.toolchain, "sysroot", None)
-        if sysroot:
-            toolchain_cflags.append(f"--sysroot={sysroot}")
-
         for target in self.config.targets:
-            cflags = toolchain_cflags + list(target.cflags)
-            for inc in target.includes:
-                cflags.append(f"-I{inc}")
-            for define in target.defines:
-                cflags.append(f"-D{define}")
-
-            for pkg_name in target.uses:
-                pkg = self.package_paths.get(pkg_name)
-                if pkg:
-                    for inc_dir in pkg.include_dirs:
-                        cflags.append(f"-I{inc_dir}")
+            cflags = self._resolve_target_cflags(target)
 
             flags_str = f" {' '.join(cflags)}" if cflags else ""
             for src in target.sources:
