@@ -59,3 +59,18 @@ def test_backend_config_must_be_mapping(tmp_path):
 
     with pytest.raises(ConfigError, match="'backend_config' must be a mapping"):
         load_config(path)
+
+def test_duplicate_target_names_raise_config_error(tmp_path):
+    path = write_config(
+        tmp_path,
+        {
+            "project": {"name": "demo"},
+            "targets": [
+                {"name": "app", "type": "executable", "sources": ["main.c"]},
+                {"name": "app", "type": "static_library", "sources": ["lib.c"]},
+            ],
+        },
+    )
+
+    with pytest.raises(ConfigError, match="Duplicate target name 'app'"):
+        load_config(path)
