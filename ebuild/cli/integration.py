@@ -17,7 +17,10 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
-
+import gzip
+import shutil
+import subprocess
+from pathlib import Path
 import click
 
 from ebuild.cli.logger import Logger
@@ -194,8 +197,29 @@ def _build_rootfs(build_dir: Path, libs: List[Path], trigger: str,
 def _create_initramfs(rootfs: Path, build_dir: Path) -> Path:
     """Create a cpio+gzip initramfs from the rootfs."""
     initramfs = build_dir / "initramfs.cpio.gz"
-    cmd = f"cd {rootfs} && find . | cpio -o -H newc 2>/dev/null | gzip > {initramfs}"
-    subprocess.run(cmd, shell=True, capture_output=True)
+    cpio_path = build_dir / "initramfs.cpio"
+
+    find_proc = subprocess.run(
+        ["find", "."],
+        cwd=rootfs,
+        capture_output=True,
+        check=True,
+    )
+
+    with open(cpio_path, "wb") as cpio_out:
+        subprocess.run(
+            ["cpio", "-o", "-H", "newc"],
+            input=find_proc.stdout,
+            stdout=cpio_out,
+            stderr=subprocess.DEVNULL,
+            cwd=rootfs,
+            check=True,
+        )
+
+    with open(cpio_path, "rb") as f_in, gzip.open(initramfs, "wb") as f_out:
+        shutil.copyfileobj(f_in, f_out)
+
+    cpio_path.unlink(missing_ok=True)
     return initramfs
 
 
