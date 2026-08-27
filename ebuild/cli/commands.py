@@ -207,6 +207,89 @@ def _detect_libraries(lib_dir: Path, pkg_name: str) -> List[str]:
     return libs if libs else [pkg_name]
 
 
+def _resolve_backend_request(
+    cfg: ProjectConfig,
+    backend_override: Optional[str],
+    source_dir: Path,
+    log: Logger,
+) -> Tuple[str, Dict[str, Any]]:
+    """Resolve the effective backend and backend-specific config."""
+    resolved_backend = backend_override or cfg.backend
+    backend_config = dict(cfg.backend_config)
+
+    if resolved_backend == "auto":
+        from ebuild.build.dispatch import detect_backend
+
+        resolved_backend = detect_backend(source_dir)
+        log.info(f"Auto-detected backend: {resolved_backend}")
+
+    return resolved_backend, backend_config
+
+
+def _configure_ninja_backend(
+    cfg: ProjectConfig,
+    build_path: Path,
+    log: Logger,
+) -> None:
+    """Generate native ebuild Ninja files for configure-only workflows."""
+    log.step("Resolving toolchain...")
+    compiler = resolve_toolchain(cfg.toolchain)
+
+    package_paths = _install_packages(cfg, build_path, log, verbose=log.verbose)
+
+    log.step(f"Generating build.ninja in {build_path}/...")
+    ninja_backend = NinjaBackend(cfg, build_path, compiler, package_paths=package_paths)
+    ninja_backend.generate()
+
+    log.success(f"Generated {build_path / 'build.ninja'}")
+    log.success(f"Generated {build_path / 'compile_commands.json'}")
+    log.info("Run 'ebuild build' to compile.")
+
+
+def _configure_external_backend(
+    cfg: ProjectConfig,
+    resolved_backend: str,
+    backend_config: Dict[str, Any],
+    build_path: Path,
+    log: Logger,
+) -> None:
+    """Run configure behavior for dispatcher-backed build systems."""
+    from ebuild.build.dispatch import BackendDispatcher
+
+    no_configure_backends = {"cargo", "make", "kbuild"}
+
+    log.step(f"Using {resolved_backend} backend...")
+    if resolved_backend in no_configure_backends:
+        log.info(f"No separate configure step for {resolved_backend}.")
+        return
+
+    dispatcher = BackendDispatcher(cfg.source_dir, build_path)
+    log.step(f"Configuring ({resolved_backend})...")
+    dispatcher.configure(
+        backend=resolved_backend,
+        config=backend_config,
+    )
+    log.success(f"Configuration completed successfully ({resolved_backend}).")
+
+
+def _format_subprocess_failure(exc: subprocess.CalledProcessError) -> str:
+    """Format a subprocess failure for user-facing CLI output."""
+    cmd = exc.cmd
+    if isinstance(cmd, (list, tuple)):
+        cmd_str = " ".join(str(part) for part in cmd)
+    else:
+        cmd_str = str(cmd)
+
+    return f"Command failed (exit code {exc.returncode}): {cmd_str}"
+
+
+def _format_missing_tool(exc: FileNotFoundError) -> str:
+    """Format missing executable/path errors for user-facing CLI output."""
+    if exc.filename:
+        return f"Required tool or file not found: {exc.filename}"
+    return str(exc)
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Pipeline helper — shared by `pipeline` and `build --board`
 # ═══════════════════════════════════════════════════════════════
@@ -549,13 +632,12 @@ def build(log: Logger, config_path: str, build_dir: str, backend: Optional[str],
         log.info(f"Project: {cfg.name} v{cfg.version}")
 
         build_path = Path(build_dir)
-        resolved_backend = backend or cfg.backend
-
-        # Auto-detect from project files if needed
-        if resolved_backend == "auto":
-            from ebuild.build.dispatch import detect_backend
-            resolved_backend = detect_backend(cfg.source_dir)
-            log.info(f"Auto-detected backend: {resolved_backend}")
+        resolved_backend, backend_config = _resolve_backend_request(
+            cfg=cfg,
+            backend_override=backend,
+            source_dir=cfg.source_dir,
+            log=log,
+        )
 
         # Route: external build systems (cmake, make, meson, cargo, kbuild)
         # go through the dispatcher. ebuild's own ninja backend handles
@@ -572,14 +654,14 @@ def build(log: Logger, config_path: str, build_dir: str, backend: Optional[str],
                 log.step(f"Configuring ({resolved_backend})...")
                 dispatcher.configure(
                     backend=resolved_backend,
-                    config=cfg.backend_config,
+                    config=backend_config,
                 )
 
             # Build
             log.step(f"Building ({resolved_backend})...")
             dispatcher.build(
                 backend=resolved_backend,
-                config=cfg.backend_config,
+                config=backend_config,
             )
 
             log.success(f"Build completed successfully ({resolved_backend}).")
@@ -619,7 +701,10 @@ def build(log: Logger, config_path: str, build_dir: str, backend: Optional[str],
         log.success("Build completed successfully.")
 
     except FileNotFoundError as e:
-        log.error(str(e))
+        log.error(_format_missing_tool(e))
+        raise SystemExit(1)
+    except subprocess.CalledProcessError as e:
+        log.error(_format_subprocess_failure(e))
         raise SystemExit(1)
     except (ConfigError, RecipeError) as e:
         log.error(f"Configuration error: {e}")
@@ -765,8 +850,14 @@ def clean(log: Logger, build_dir: str) -> None:
     type=click.Path(),
     help="Build output directory.",
 )
+@click.option(
+    "--backend",
+    default=None,
+    type=click.Choice(["auto", "cmake", "make", "meson", "cargo", "ninja", "kbuild"]),
+    help="Force a specific build backend.",
+)
 @click.pass_obj
-def configure(log: Logger, config_path: str, build_dir: str) -> None:
+def configure(log: Logger, config_path: str, build_dir: str, backend: Optional[str]) -> None:
     """Generate build files without building."""
     log.header("ebuild — Configure")
 
@@ -775,23 +866,31 @@ def configure(log: Logger, config_path: str, build_dir: str) -> None:
         cfg = load_config(config_path)
         log.info(f"Project: {cfg.name} v{cfg.version}")
 
-        log.step("Resolving toolchain...")
-        compiler = resolve_toolchain(cfg.toolchain)
-
         build_path = Path(build_dir)
+        resolved_backend, backend_config = _resolve_backend_request(
+            cfg=cfg,
+            backend_override=backend,
+            source_dir=cfg.source_dir,
+            log=log,
+        )
 
-        package_paths = _install_packages(cfg, build_path, log, verbose=log.verbose)
+        if resolved_backend == "ninja":
+            _configure_ninja_backend(cfg, build_path, log)
+            return
 
-        log.step(f"Generating build.ninja in {build_path}/...")
-        backend = NinjaBackend(cfg, build_path, compiler, package_paths=package_paths)
-        backend.generate()
-
-        log.success(f"Generated {build_path / 'build.ninja'}")
-        log.success(f"Generated {build_path / 'compile_commands.json'}")
-        log.info("Run 'ebuild build' to compile.")
+        _configure_external_backend(
+            cfg=cfg,
+            resolved_backend=resolved_backend,
+            backend_config=backend_config,
+            build_path=build_path,
+            log=log,
+        )
 
     except FileNotFoundError as e:
-        log.error(str(e))
+        log.error(_format_missing_tool(e))
+        raise SystemExit(1)
+    except subprocess.CalledProcessError as e:
+        log.error(_format_subprocess_failure(e))
         raise SystemExit(1)
     except (ConfigError, RecipeError) as e:
         log.error(f"Configuration error: {e}")
