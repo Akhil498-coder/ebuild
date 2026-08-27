@@ -195,31 +195,41 @@ def _build_rootfs(build_dir: Path, libs: List[Path], trigger: str,
 
 
 def _create_initramfs(rootfs: Path, build_dir: Path) -> Path:
-    """Create a cpio+gzip initramfs from the rootfs."""
+    """Create a cpio+gzip initramfs from the rootfs.
+
+    Security note: this used to build a single shell string (``cd {rootfs}
+    && find . | cpio ... > {initramfs}``) and run it with ``shell=True``.
+    Both ``rootfs`` and ``build_dir`` ultimately come from the ``--build-dir``
+    CLI option, which click accepts as an unrestricted path -- a value like
+    ``/tmp/x; touch /tmp/pwned #`` was interpolated straight into the shell
+    string and executed. This rebuilds the same find | cpio | gzip pipeline
+    as three argv-list subprocesses connected by pipes, so no shell is ever
+    invoked and no part of the path can be interpreted as shell syntax.
+    """
     initramfs = build_dir / "initramfs.cpio.gz"
-    cpio_path = build_dir / "initramfs.cpio"
 
-    find_proc = subprocess.run(
-        ["find", "."],
-        cwd=rootfs,
-        capture_output=True,
-        check=True,
+    find_proc = subprocess.Popen(
+        ["find", "."], cwd=str(rootfs), stdout=subprocess.PIPE
     )
+    cpio_proc = subprocess.Popen(
+        ["cpio", "-o", "-H", "newc"],
+        cwd=str(rootfs),
+        stdin=find_proc.stdout,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    # Let find_proc receive SIGPIPE if cpio_proc exits early.
+    if find_proc.stdout is not None:
+        find_proc.stdout.close()
 
-    with open(cpio_path, "wb") as cpio_out:
-        subprocess.run(
-            ["cpio", "-o", "-H", "newc"],
-            input=find_proc.stdout,
-            stdout=cpio_out,
-            stderr=subprocess.DEVNULL,
-            cwd=rootfs,
-            check=True,
-        )
+    with open(initramfs, "wb") as out_f:
+        gzip_proc = subprocess.Popen(["gzip"], stdin=cpio_proc.stdout, stdout=out_f)
+        if cpio_proc.stdout is not None:
+            cpio_proc.stdout.close()
+        gzip_proc.communicate()
 
-    with open(cpio_path, "rb") as f_in, gzip.open(initramfs, "wb") as f_out:
-        shutil.copyfileobj(f_in, f_out)
-
-    cpio_path.unlink(missing_ok=True)
+    cpio_proc.wait()
+    find_proc.wait()
     return initramfs
 
 
