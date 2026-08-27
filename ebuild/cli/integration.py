@@ -25,6 +25,7 @@ import click
 
 from ebuild.cli.logger import Logger
 from ebuild.system.rootfs import RootfsBuilder
+from ebuild import __version__
 
 
 # Default sibling repo names and their build configs
@@ -537,7 +538,7 @@ def register_commands(cli_group: click.Group) -> None:
 
     @cli_group.command()
     @click.option("--target", required=True, help="Target hardware (e.g., raspi4)")
-    @click.option("--version", default="0.1.0", help="Release version")
+    @click.option("--version", default=__version__, help="Release version")
     @click.option("--build-dir", default="build", help="Build directory with compiled artifacts")
     @click.option("--output", default="dist", help="Output directory for deliverable")
     @click.option("--workspace", default=None, help="EoS workspace root (auto-detect)")
