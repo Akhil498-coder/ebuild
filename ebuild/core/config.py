@@ -103,10 +103,31 @@ class ProjectConfig:
         return [t.name for t in self.targets]
 
 
-def _parse_target(raw: Dict[str, Any]) -> TargetConfig:
+def _parse_target(raw: Any) -> TargetConfig:
     """Parse a single target dictionary into a TargetConfig."""
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"Invalid target definition: expected a YAML mapping, got {type(raw).__name__}."
+        )
+
+    target_name = raw.get("name", "")
+    for field_name in (
+        "sources", "includes", "cflags", "ldflags", "defines", "depends", "uses"
+    ):
+        value = raw.get(field_name, [])
+        if not isinstance(value, list):
+            label = target_name or "<unnamed>"
+            raise ConfigError(
+                f"Target '{label}' field '{field_name}' must be a list."
+            )
+        if not all(isinstance(item, str) for item in value):
+            label = target_name or "<unnamed>"
+            raise ConfigError(
+                f"Target '{label}' field '{field_name}' must contain only strings."
+            )
+
     target = TargetConfig(
-        name=raw.get("name", ""),
+        name=target_name,
         target_type=raw.get("type", ""),
         sources=raw.get("sources", []),
         includes=raw.get("includes", []),
@@ -174,6 +195,8 @@ def load_config(config_path: str | Path) -> ProjectConfig:
     # --- backend (optional) ---
     backend = raw.get("backend", "auto")
     backend_config = raw.get("backend_config", {})
+    if not isinstance(backend_config, dict):
+        raise ConfigError("'backend_config' must be a mapping.")
 
     # For system builds, pull from 'system' section
     if raw.get("system") and isinstance(raw["system"], dict):
@@ -194,8 +217,15 @@ def load_config(config_path: str | Path) -> ProjectConfig:
 
     targets = [_parse_target(t) for t in raw_targets]
 
-    # validate dependency references
-    known_names = {t.name for t in targets}
+    # validate duplicate target names and dependency references
+    known_names = set()
+    for t in targets:
+        if t.name in known_names:
+            raise ConfigError(
+                f"Duplicate target name '{t.name}' found in project configuration."
+            )
+        known_names.add(t.name)
+
     for t in targets:
         for dep in t.depends:
             if dep not in known_names:
