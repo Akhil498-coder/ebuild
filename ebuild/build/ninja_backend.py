@@ -128,7 +128,7 @@ class NinjaBackend:
 
             obj_files = []
             for src in target.sources:
-                obj = str(Path(self.build_dir / src).with_suffix(".o"))
+                obj = str(self._object_path(target, src))
                 obj_files.append(obj)
                 lines.append(
                     f"build {obj}: cc {src}"
@@ -193,9 +193,13 @@ class NinjaBackend:
 
             flags_str = f" {' '.join(cflags)}" if cflags else ""
             for src in target.sources:
+                # A source shared by two targets yields two entries, which the
+                # compilation database format allows. The -o keeps them
+                # distinguishable, and matches what ninja actually runs.
+                obj = self._object_path(target, src)
                 commands.append({
                     "directory": source_dir,
-                    "command": f"{self.toolchain.cc}{flags_str} -c {src}",
+                    "command": f"{self.toolchain.cc}{flags_str} -c {src} -o {obj}",
                     "file": src,
                 })
 

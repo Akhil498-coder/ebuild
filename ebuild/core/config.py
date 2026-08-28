@@ -20,6 +20,18 @@ class ConfigError(Exception):
     """Raised when a build configuration is invalid."""
 
 
+def _format_yaml_error(config_path: Path, exc: yaml.YAMLError) -> str:
+    """Format YAML parser errors into concise user-facing messages."""
+    problem = getattr(exc, "problem", None) or "Malformed YAML"
+    mark = getattr(exc, "problem_mark", None)
+    if mark is not None:
+        return (
+            f"Invalid YAML in {config_path} "
+            f"(line {mark.line + 1}, column {mark.column + 1}): {problem}"
+        )
+    return f"Invalid YAML in {config_path}: {problem}"
+
+
 @dataclass
 class PackageDep:
     """An external package dependency declared in build.yaml."""
@@ -158,8 +170,11 @@ def load_config(config_path: str | Path) -> ProjectConfig:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with open(config_path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        raise ConfigError(_format_yaml_error(config_path, exc)) from exc
 
     if not isinstance(raw, dict):
         raise ConfigError(f"Invalid config file: expected a YAML mapping, got {type(raw).__name__}.")
@@ -202,8 +217,15 @@ def load_config(config_path: str | Path) -> ProjectConfig:
 
     targets = [_parse_target(t) for t in raw_targets]
 
-    # validate dependency references
-    known_names = {t.name for t in targets}
+    # validate duplicate target names and dependency references
+    known_names = set()
+    for t in targets:
+        if t.name in known_names:
+            raise ConfigError(
+                f"Duplicate target name '{t.name}' found in project configuration."
+            )
+        known_names.add(t.name)
+
     for t in targets:
         for dep in t.depends:
             if dep not in known_names:
