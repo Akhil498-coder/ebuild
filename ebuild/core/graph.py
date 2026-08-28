@@ -26,6 +26,7 @@ class DependencyGraph:
 
     def __init__(self) -> None:
         self._adj: Dict[str, Set[str]] = defaultdict(set)
+        self._rev_adj: Dict[str, Set[str]] = defaultdict(set)
         self._nodes: Set[str] = set()
 
     def add_node(self, name: str) -> None:
@@ -40,6 +41,7 @@ class DependencyGraph:
         self._nodes.add(dependent)
         self._nodes.add(dependency)
         self._adj[dependent].add(dependency)
+        self._rev_adj[dependency].add(dependent)
 
     @property
     def nodes(self) -> Set[str]:
@@ -51,7 +53,7 @@ class DependencyGraph:
 
     def dependents_of(self, node: str) -> Set[str]:
         """Return nodes that directly depend on *node*."""
-        return {n for n, deps in self._adj.items() if node in deps}
+        return set(self._rev_adj.get(node, set()))
 
     def all_dependencies(self, node: str) -> Set[str]:
         """Return the transitive closure of dependencies for *node*."""
@@ -69,17 +71,18 @@ class DependencyGraph:
         """Return nodes in build order (dependencies first).
 
         Uses Kahn's algorithm. Raises CycleError if a cycle exists.
+
+        Independent targets are emitted in sorted name order so the result
+        is stable across processes. Walking ``self._nodes`` (a set) directly
+        made ``ebuild info`` and generated ``build.ninja`` files change
+        between runs even when the graph had not.
         """
-        in_degree: Dict[str, int] = {n: 0 for n in self._nodes}
-        reverse_adj: Dict[str, Set[str]] = defaultdict(set)
+        in_degree: Dict[str, int] = {n: len(self._adj.get(n, set())) for n in self._nodes}
 
-        for dependent, deps in self._adj.items():
-            for dep in deps:
-                reverse_adj[dep].add(dependent)
-                in_degree[dependent] = in_degree.get(dependent, 0) + 1
-
+        # Ready nodes must be sorted: set iteration order is not part of
+        # the language spec, and dependents are already sorted below.
         queue: deque[str] = deque()
-        for node in self._nodes:
+        for node in sorted(self._nodes):
             if in_degree.get(node, 0) == 0:
                 queue.append(node)
 
@@ -87,7 +90,7 @@ class DependencyGraph:
         while queue:
             node = queue.popleft()
             result.append(node)
-            for dependent in sorted(reverse_adj.get(node, set())):
+            for dependent in sorted(self._rev_adj.get(node, set())):
                 in_degree[dependent] -= 1
                 if in_degree[dependent] == 0:
                     queue.append(dependent)

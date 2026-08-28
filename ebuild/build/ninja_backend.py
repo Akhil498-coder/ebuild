@@ -24,6 +24,12 @@ class PackagePaths:
     libraries: List[str] = field(default_factory=list)
 
 
+# Flags that already request position-independent code. If one of these is
+# present (or explicitly disabled with -fno-*) we must not add -fPIC again.
+_PIC_FLAGS = {"-fPIC", "-fpic", "-fPIE", "-fpie", "-fno-pic", "-fno-PIC",
+              "-fno-pie", "-fno-PIE"}
+
+
 class NinjaBackend:
     """Generate build.ninja from a ProjectConfig and resolved toolchain.
 
@@ -52,6 +58,39 @@ class NinjaBackend:
         self._write_ninja()
         self._write_compile_commands()
 
+    def _target_cflags(self, target) -> List[str]:
+        """Effective compile flags for *target*.
+
+        Combines toolchain cflags, sysroot, target-specific flags, include
+        dirs, defines and package include dirs. Shared library sources get
+        ``-fPIC`` appended (unless a PIC-related flag is already present)
+        because the ``link_shared`` rule links with ``-shared``; objects
+        without position-independent code fail that link on most 64-bit
+        targets ("recompile with -fPIC").
+        """
+        cflags = list(getattr(self.toolchain, "cflags", []))
+        sysroot = getattr(self.toolchain, "sysroot", None)
+        if sysroot:
+            cflags.append(f"--sysroot={sysroot}")
+
+        cflags.extend(target.cflags)
+        for inc in target.includes:
+            cflags.append(f"-I{inc}")
+        for define in target.defines:
+            cflags.append(f"-D{define}")
+
+        for pkg_name in target.uses:
+            pkg = self.package_paths.get(pkg_name)
+            if pkg:
+                for inc_dir in pkg.include_dirs:
+                    cflags.append(f"-I{inc_dir}")
+
+        if target.target_type == "shared_library":
+            if not any(flag in _PIC_FLAGS for flag in cflags):
+                cflags.append("-fPIC")
+
+        return cflags
+
     def _write_ninja(self) -> None:
         """Write the build.ninja file."""
         ninja_path = self.build_dir / "build.ninja"
@@ -69,28 +108,27 @@ class NinjaBackend:
             "  command = $cc $ldflags $in -o $out $libs",
             "  description = LINK $out",
             "",
+            "rule link_shared",
+            "  command = $cc -shared $ldflags $in -o $out $libs",
+            "  description = LINK_SHARED $out",
+            "",
             "rule ar_rule",
             "  command = $ar rcs $out $in",
             "  description = AR $out",
             "",
         ]
 
-        for target in self.config.targets:
-            cflags = list(target.cflags)
-            for inc in target.includes:
-                cflags.append(f"-I{inc}")
-            for define in target.defines:
-                cflags.append(f"-D{define}")
+        toolchain_ldflags = list(getattr(self.toolchain, "ldflags", []))
+        sysroot = getattr(self.toolchain, "sysroot", None)
+        if sysroot:
+            toolchain_ldflags.append(f"--sysroot={sysroot}")
 
-            for pkg_name in target.uses:
-                pkg = self.package_paths.get(pkg_name)
-                if pkg:
-                    for inc_dir in pkg.include_dirs:
-                        cflags.append(f"-I{inc_dir}")
+        for target in self.config.targets:
+            cflags = self._target_cflags(target)
 
             obj_files = []
             for src in target.sources:
-                obj = str(Path(self.build_dir / src).with_suffix(".o"))
+                obj = str(self._object_path(target, src))
                 obj_files.append(obj)
                 lines.append(
                     f"build {obj}: cc {src}"
@@ -100,7 +138,7 @@ class NinjaBackend:
                 lines.append("")
 
             if target.target_type == "executable":
-                ldflags = list(target.ldflags)
+                ldflags = toolchain_ldflags + list(target.ldflags)
                 libs = []
                 dep_archives = []
                 for pkg_name in target.uses:
@@ -170,16 +208,17 @@ class NinjaBackend:
         source_dir = str(self.config.source_dir.resolve())
 
         for target in self.config.targets:
-            cflags = list(target.cflags)
-            for inc in target.includes:
-                cflags.append(f"-I{inc}")
-            for define in target.defines:
-                cflags.append(f"-D{define}")
+            cflags = self._target_cflags(target)
 
+            flags_str = f" {' '.join(cflags)}" if cflags else ""
             for src in target.sources:
+                # A source shared by two targets yields two entries, which the
+                # compilation database format allows. The -o keeps them
+                # distinguishable, and matches what ninja actually runs.
+                obj = self._object_path(target, src)
                 commands.append({
                     "directory": source_dir,
-                    "command": f"{self.toolchain.cc} {' '.join(cflags)} -c {src}",
+                    "command": f"{self.toolchain.cc}{flags_str} -c {src} -o {obj}",
                     "file": src,
                 })
 
