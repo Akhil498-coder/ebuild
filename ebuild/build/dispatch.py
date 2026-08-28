@@ -77,6 +77,15 @@ class BackendDispatcher:
         elif backend == "cargo":
             pass
 
+        else:
+            raise RuntimeError(
+                f"BackendDispatcher cannot configure backend '{backend}'. "
+                "This dispatcher only handles cmake, meson, and cargo "
+                "(make/kbuild need no configure step). ebuild's own ninja "
+                "backend is invoked directly and requires 'targets' in "
+                "build.yaml -- add targets or choose another backend."
+            )
+
     def build(
         self,
         backend: str,
@@ -110,6 +119,15 @@ class BackendDispatcher:
         elif backend == "kbuild":
             cmd = ["make", "-C", str(self.source_dir)]
             subprocess.run(cmd, check=True)
+
+        else:
+            raise RuntimeError(
+                f"BackendDispatcher cannot build backend '{backend}'. "
+                "This dispatcher only handles cmake, make, meson, cargo, "
+                "and kbuild. ebuild's own ninja backend is invoked "
+                "directly and requires 'targets' in build.yaml -- add "
+                "targets or choose another backend."
+            )
 
     def clean(self, backend: str) -> None:
         """Run the clean step for the given backend."""
