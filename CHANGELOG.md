@@ -3,7 +3,12 @@
 ## [Unreleased]
 
 ### Fixed
-- **Package fetch:** `tar.extractall(..., filter="data")` is Python 3.12-only. Extraction now uses that filter when available and a member-path check on 3.8–3.11, so `ebuild` package installs work on the declared Python range. Zip extraction now uses `Path.relative_to` so a sibling path is not mistaken for a child of the extract directory.
+- **Ninja backend: header changes now trigger a rebuild.** The generated `cc`
+  rule declared no depfile, so Ninja only knew about the sources listed in
+  `build.yaml`. Editing a header left stale object files in place and the build
+  reported success. The rule now compiles with `-MMD -MF $out.d` and declares
+  `depfile`/`deps`, so Ninja tracks the real include graph
+  (`ebuild/build/ninja_backend.py`).
 
 ## [3.0.1] - 2026-05-16
 

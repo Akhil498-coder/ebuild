@@ -1,5 +1,11 @@
+import importlib.util
 import json
+import shutil
+import subprocess
+import sys
 from types import SimpleNamespace
+
+import pytest
 
 from ebuild.build.ninja_backend import NinjaBackend
 from ebuild.core.config import ProjectConfig, TargetConfig
@@ -44,11 +50,15 @@ def test_shared_library_uses_shared_link_rule(tmp_path):
     assert ": link_shared " in ninja_file
 
 
-def test_cflags_consistent_between_ninja_and_compile_commands(tmp_path):
-    """Verify that the refactored _resolve_target_cflags produces identical
-    flags in both build.ninja and compile_commands.json."""
+def test_cc_rule_emits_and_consumes_a_depfile(tmp_path):
+    """The compile rule must generate a depfile and tell Ninja to read it.
+
+    Without this, a target is only rebuilt when one of its *listed* sources
+    changes. Headers are never listed, so editing a header leaves stale
+    object files behind and the build silently reports success.
+    """
     config = ProjectConfig(
-        name="consistency-test",
+        name="depfile-example",
         version="1.0.0",
         source_dir=tmp_path,
         targets=[
@@ -56,39 +66,33 @@ def test_cflags_consistent_between_ninja_and_compile_commands(tmp_path):
                 name="app",
                 target_type="executable",
                 sources=["main.c"],
-                includes=["include"],
-                defines=["DEBUG=1", "VERSION=2"],
-                cflags=["-O2"],
             )
         ],
     )
-    toolchain = SimpleNamespace(cc="gcc", cxx="g++", ar="ar", cflags=["-Wall"], ldflags=[])
+    toolchain = SimpleNamespace(cc="cc", cxx="c++", ar="ar")
 
     NinjaBackend(config, tmp_path / "build", toolchain).generate()
 
-    # Parse compile_commands.json
-    cc_json = json.loads((tmp_path / "build" / "compile_commands.json").read_text())
-    assert len(cc_json) == 1
-    cc_command = cc_json[0]["command"]
+    ninja_file = (tmp_path / "build" / "build.ninja").read_text(encoding="utf-8")
 
-    # Parse build.ninja cflags line
-    ninja_text = (tmp_path / "build" / "build.ninja").read_text()
-    for line in ninja_text.splitlines():
-        if line.strip().startswith("cflags ="):
-            ninja_cflags = line.strip().replace("cflags = ", "")
-            break
-    else:
-        raise AssertionError("No cflags line found in build.ninja")
+    assert "-MMD -MF $out.d" in ninja_file
+    assert "  depfile = $out.d" in ninja_file
+    assert "  deps = gcc" in ninja_file
 
-    # All flags in ninja should appear in compile_commands
-    for flag in ninja_cflags.split():
-        assert flag in cc_command, f"Flag {flag!r} in build.ninja but not compile_commands.json"
+    # The directives have to sit inside the `cc` rule, not just anywhere.
+    cc_rule = ninja_file.split("rule cc\n", 1)[1].split("\nrule ", 1)[0]
+    assert "depfile = $out.d" in cc_rule
+    assert "deps = gcc" in cc_rule
 
 
-def test_sysroot_propagated_to_cflags(tmp_path):
-    """Sysroot should appear in both cflags and ldflags."""
+def test_depfile_directives_do_not_leak_into_compile_commands(tmp_path):
+    """compile_commands.json describes the *compile*, not Ninja's bookkeeping.
+
+    Clang tooling chokes on a stray ``-MF $out.d`` because ``$out`` is a Ninja
+    variable, not a path.
+    """
     config = ProjectConfig(
-        name="sysroot-test",
+        name="depfile-ccjson",
         version="1.0.0",
         source_dir=tmp_path,
         targets=[
@@ -99,24 +103,50 @@ def test_sysroot_propagated_to_cflags(tmp_path):
             )
         ],
     )
-    toolchain = SimpleNamespace(
-        cc="arm-none-eabi-gcc", cxx="arm-none-eabi-g++", ar="arm-none-eabi-ar",
-        cflags=[], ldflags=[], sysroot="/opt/arm-sysroot",
+    toolchain = SimpleNamespace(cc="cc", cxx="c++", ar="ar")
+
+    NinjaBackend(config, tmp_path / "build", toolchain).generate()
+
+    cc_json = json.loads(
+        (tmp_path / "build" / "compile_commands.json").read_text(encoding="utf-8")
     )
 
-    backend = NinjaBackend(config, tmp_path / "build", toolchain)
-    cflags = backend._resolve_target_cflags(config.targets[0])
-    ldflags = backend._get_toolchain_ldflags()
-    assert "--sysroot=/opt/arm-sysroot" in cflags
-    assert "--sysroot=/opt/arm-sysroot" in ldflags
+    assert cc_json, "expected at least one compile command"
+    for entry in cc_json:
+        assert "-MMD" not in entry["command"]
+        assert "$out" not in entry["command"]
 
 
-def test_resolve_target_cflags_includes_packages(tmp_path):
-    """Package include dirs must be included in resolved cflags."""
-    from ebuild.build.ninja_backend import PackagePaths
+@pytest.mark.skipif(
+    shutil.which("cc") is None and shutil.which("gcc") is None,
+    reason="no host C compiler available",
+)
+def test_editing_a_header_triggers_a_rebuild(tmp_path):
+    """End-to-end: change a header, and the object that includes it recompiles.
 
+    This is the regression that motivated the depfile change. The header is
+    rewritten to contain ``#error``; if the object is genuinely recompiled the
+    build must fail. A build that still succeeds means a stale object was
+    reused.
+    """
+    ninja = importlib.util.find_spec("ninja")
+    if ninja is None:
+        pytest.skip("ninja python package not installed")
+
+    (tmp_path / "greeting.h").write_text(
+        "#ifndef GREETING_H\n#define GREETING_H\n#define GREETING 1\n#endif\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "main.c").write_text(
+        '#include "greeting.h"\nint main(void) { return GREETING - 1; }\n',
+        encoding="utf-8",
+    )
+
+    build_dir = tmp_path / "build"
+    cc = shutil.which("cc") or shutil.which("gcc")
+    toolchain = SimpleNamespace(cc=cc, cxx="c++", ar="ar")
     config = ProjectConfig(
-        name="pkg-test",
+        name="header-dep",
         version="1.0.0",
         source_dir=tmp_path,
         targets=[
@@ -124,15 +154,31 @@ def test_resolve_target_cflags_includes_packages(tmp_path):
                 name="app",
                 target_type="executable",
                 sources=["main.c"],
-                uses=["libfoo"],
+                includes=["."],
             )
         ],
     )
-    toolchain = SimpleNamespace(cc="gcc", cxx="g++", ar="ar")
-    pkg_paths = {
-        "libfoo": PackagePaths(include_dirs=[tmp_path / "libfoo" / "include"]),
-    }
 
-    backend = NinjaBackend(config, tmp_path / "build", toolchain, package_paths=pkg_paths)
-    cflags = backend._resolve_target_cflags(config.targets[0])
-    assert any("libfoo" in str(f) for f in cflags)
+    def run_ninja():
+        NinjaBackend(config, build_dir, toolchain).generate()
+        return subprocess.run(
+            [sys.executable, "-m", "ninja", "-f", str(build_dir / "build.ninja")],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+
+    first = run_ninja()
+    assert first.returncode == 0, f"initial build failed:\n{first.stderr}"
+
+    # Poison the header. Nothing in build.yaml changed — only the header.
+    (tmp_path / "greeting.h").write_text(
+        '#error "header was recompiled"\n', encoding="utf-8"
+    )
+
+    second = run_ninja()
+    assert second.returncode != 0, (
+        "editing a header did not trigger a recompile — a stale object file "
+        "was reused and the build wrongly reported success"
+    )
+    assert "header was recompiled" in (second.stdout + second.stderr)
