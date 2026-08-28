@@ -90,7 +90,9 @@ def test_sysroot_propagated_to_cflags(tmp_path):
 
     backend = NinjaBackend(config, tmp_path / "build", toolchain)
     cflags = backend._resolve_target_cflags(config.targets[0])
+    ldflags = backend._get_toolchain_ldflags()
     assert "--sysroot=/opt/arm-sysroot" in cflags
+    assert "--sysroot=/opt/arm-sysroot" in ldflags
 
 
 def test_resolve_target_cflags_includes_packages(tmp_path):
