@@ -64,6 +64,13 @@ static void test_graph_max_length_node_name(void) {
     memset(name, 'A', EOS_MAX_NAME - 1);
     name[EOS_MAX_NAME - 1] = '\0';
 
+    /*
+     * Fill the destination with non-zero data so the test can detect
+     * a missing null terminator even though eos_graph_init() zeroes
+     * the graph initially.
+     */
+    memset(g.nodes[0].name, 'X', EOS_MAX_NAME);
+
     int id;
     EosResult r = eos_graph_add_node(
         &g,
@@ -85,7 +92,6 @@ static void test_graph_max_length_node_name(void) {
         "maximum-length node name can be found"
     );
 }
-
 static void test_graph_find_node(void) {
     printf("test_graph_find_node:\n");
     EosGraph g;
