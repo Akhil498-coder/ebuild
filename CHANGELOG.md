@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Package fetch:** `tar.extractall(..., filter="data")` is Python 3.12-only. Extraction now uses that filter when available and a member-path check on 3.8–3.11, so `ebuild` package installs work on the declared Python range. Zip extraction now uses `Path.relative_to` so a sibling path is not mistaken for a child of the extract directory.
+
 ## [3.0.1] - 2026-05-16
 
 ### Production Release — Unified EmbeddedOS-org v3.0.1
