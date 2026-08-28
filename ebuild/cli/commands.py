@@ -693,8 +693,17 @@ def build(log: Logger, config_path: str, build_dir: str, backend: Optional[str],
 
         result = subprocess.run(ninja_cmd, capture_output=not log.verbose, cwd=str(cfg.source_dir))
         if result.returncode != 0:
-            if not log.verbose and result.stderr:
-                log.error(result.stderr.decode(errors="replace"))
+            # ninja reports compiler diagnostics on stdout, not stderr, so a
+            # failure surfaced only through stderr says nothing about what broke.
+            # Replay both streams verbatim rather than through log.error(), which
+            # would prefix a multi-line diagnostic with a single "[error]" tag.
+            if not log.verbose:
+                if result.stdout:
+                    sys.stdout.write(result.stdout.decode(errors="replace"))
+                    sys.stdout.flush()
+                if result.stderr:
+                    sys.stderr.write(result.stderr.decode(errors="replace"))
+                    sys.stderr.flush()
             log.error("Build failed.")
             raise SystemExit(1)
 
