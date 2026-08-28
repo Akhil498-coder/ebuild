@@ -93,7 +93,13 @@ class PackageRegistry:
     def list_all_versions(self, name: str) -> List[PackageRecipe]:
         """Return all versions of a package."""
         versions = self._recipes.get(name, {})
-        return [versions[v] for v in sorted(versions.keys())]
+        return [
+                versions[v]
+                for v in sorted(
+                    versions.keys(),
+                    key=lambda v: [int(x) for x in v.split(".")],
+                 )
+              ]
 
     @property
     def package_count(self) -> int:
