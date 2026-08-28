@@ -17,11 +17,15 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
-
+import gzip
+import shutil
+import subprocess
+from pathlib import Path
 import click
 
 from ebuild.cli.logger import Logger
 from ebuild.system.rootfs import RootfsBuilder
+from ebuild import __version__
 
 
 # Default sibling repo names and their build configs
@@ -192,10 +196,41 @@ def _build_rootfs(build_dir: Path, libs: List[Path], trigger: str,
 
 
 def _create_initramfs(rootfs: Path, build_dir: Path) -> Path:
-    """Create a cpio+gzip initramfs from the rootfs."""
+    """Create a cpio+gzip initramfs from the rootfs.
+
+    Security note: this used to build a single shell string (``cd {rootfs}
+    && find . | cpio ... > {initramfs}``) and run it with ``shell=True``.
+    Both ``rootfs`` and ``build_dir`` ultimately come from the ``--build-dir``
+    CLI option, which click accepts as an unrestricted path -- a value like
+    ``/tmp/x; touch /tmp/pwned #`` was interpolated straight into the shell
+    string and executed. This rebuilds the same find | cpio | gzip pipeline
+    as three argv-list subprocesses connected by pipes, so no shell is ever
+    invoked and no part of the path can be interpreted as shell syntax.
+    """
     initramfs = build_dir / "initramfs.cpio.gz"
-    cmd = f"cd {rootfs} && find . | cpio -o -H newc 2>/dev/null | gzip > {initramfs}"
-    subprocess.run(cmd, shell=True, capture_output=True)
+
+    find_proc = subprocess.Popen(
+        ["find", "."], cwd=str(rootfs), stdout=subprocess.PIPE
+    )
+    cpio_proc = subprocess.Popen(
+        ["cpio", "-o", "-H", "newc"],
+        cwd=str(rootfs),
+        stdin=find_proc.stdout,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    # Let find_proc receive SIGPIPE if cpio_proc exits early.
+    if find_proc.stdout is not None:
+        find_proc.stdout.close()
+
+    with open(initramfs, "wb") as out_f:
+        gzip_proc = subprocess.Popen(["gzip"], stdin=cpio_proc.stdout, stdout=out_f)
+        if cpio_proc.stdout is not None:
+            cpio_proc.stdout.close()
+        gzip_proc.communicate()
+
+    cpio_proc.wait()
+    find_proc.wait()
     return initramfs
 
 
@@ -503,7 +538,7 @@ def register_commands(cli_group: click.Group) -> None:
 
     @cli_group.command()
     @click.option("--target", required=True, help="Target hardware (e.g., raspi4)")
-    @click.option("--version", default="0.1.0", help="Release version")
+    @click.option("--version", default=__version__, help="Release version")
     @click.option("--build-dir", default="build", help="Build directory with compiled artifacts")
     @click.option("--output", default="dist", help="Output directory for deliverable")
     @click.option("--workspace", default=None, help="EoS workspace root (auto-detect)")
