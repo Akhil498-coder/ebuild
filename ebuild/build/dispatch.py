@@ -130,6 +130,15 @@ class BackendDispatcher:
                 f"Supported backends: {', '.join(sorted(ALL_BACKENDS))}"
             )
 
+        else:
+            raise RuntimeError(
+                f"BackendDispatcher cannot configure backend '{backend}'. "
+                "This dispatcher only handles cmake, meson, and cargo "
+                "(make/kbuild need no configure step). ebuild's own ninja "
+                "backend is invoked directly and requires 'targets' in "
+                "build.yaml -- add targets or choose another backend."
+            )
+
     def build(
         self,
         backend: str,
