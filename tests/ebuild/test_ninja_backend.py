@@ -11,6 +11,22 @@ from ebuild.build.ninja_backend import NinjaBackend
 from ebuild.core.config import ProjectConfig, TargetConfig
 
 
+def _shared_library_config(tmp_path, target_cflags=None):
+    return ProjectConfig(
+        name="shared-example",
+        version="1.0.0",
+        source_dir=tmp_path,
+        targets=[
+            TargetConfig(
+                name="example",
+                target_type="shared_library",
+                sources=["example.c"],
+                cflags=target_cflags or [],
+            )
+        ],
+    )
+
+
 def test_shared_library_uses_shared_link_rule(tmp_path):
     config = ProjectConfig(
         name="shared-example",
