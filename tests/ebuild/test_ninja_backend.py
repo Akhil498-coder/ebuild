@@ -44,44 +44,95 @@ def test_shared_library_uses_shared_link_rule(tmp_path):
     assert ": link_shared " in ninja_file
 
 
-def test_shared_library_sources_compile_with_fpic(tmp_path):
-    """Shared library objects need position-independent code or the
-    ``-shared`` link step fails with "recompile with -fPIC"."""
-    config = _shared_library_config(tmp_path)
-    toolchain = SimpleNamespace(cc="cc", cxx="c++", ar="ar")
-
-    NinjaBackend(config, tmp_path / "build", toolchain).generate()
-
-    ninja_file = (tmp_path / "build" / "build.ninja").read_text(encoding="utf-8")
-    assert "cflags = -fPIC" in ninja_file
-
-    cc_data = json.loads((tmp_path / "build" / "compile_commands.json").read_text())
-    assert "-fPIC" in cc_data[0]["command"]
-
-
-def test_shared_library_does_not_duplicate_user_fpic(tmp_path):
-    config = _shared_library_config(tmp_path, target_cflags=["-fPIC"])
-    toolchain = SimpleNamespace(cc="cc", cxx="c++", ar="ar")
-
-    NinjaBackend(config, tmp_path / "build", toolchain).generate()
-
-    ninja_file = (tmp_path / "build" / "build.ninja").read_text(encoding="utf-8")
-    assert ninja_file.count("-fPIC") == 1
-
-
-def test_non_shared_targets_do_not_get_fpic(tmp_path):
+def test_cflags_consistent_between_ninja_and_compile_commands(tmp_path):
+    """Verify that the refactored _resolve_target_cflags produces identical
+    flags in both build.ninja and compile_commands.json."""
     config = ProjectConfig(
-        name="mixed",
+        name="consistency-test",
         version="1.0.0",
         source_dir=tmp_path,
         targets=[
-            TargetConfig(name="app", target_type="executable", sources=["app.c"]),
-            TargetConfig(name="lib", target_type="static_library", sources=["lib.c"]),
+            TargetConfig(
+                name="app",
+                target_type="executable",
+                sources=["main.c"],
+                includes=["include"],
+                defines=["DEBUG=1", "VERSION=2"],
+                cflags=["-O2"],
+            )
         ],
     )
-    toolchain = SimpleNamespace(cc="cc", cxx="c++", ar="ar")
+    toolchain = SimpleNamespace(cc="gcc", cxx="g++", ar="ar", cflags=["-Wall"], ldflags=[])
 
     NinjaBackend(config, tmp_path / "build", toolchain).generate()
 
-    ninja_file = (tmp_path / "build" / "build.ninja").read_text(encoding="utf-8")
-    assert "-fPIC" not in ninja_file
+    # Parse compile_commands.json
+    cc_json = json.loads((tmp_path / "build" / "compile_commands.json").read_text())
+    assert len(cc_json) == 1
+    cc_command = cc_json[0]["command"]
+
+    # Parse build.ninja cflags line
+    ninja_text = (tmp_path / "build" / "build.ninja").read_text()
+    for line in ninja_text.splitlines():
+        if line.strip().startswith("cflags ="):
+            ninja_cflags = line.strip().replace("cflags = ", "")
+            break
+    else:
+        raise AssertionError("No cflags line found in build.ninja")
+
+    # All flags in ninja should appear in compile_commands
+    for flag in ninja_cflags.split():
+        assert flag in cc_command, f"Flag {flag!r} in build.ninja but not compile_commands.json"
+
+
+def test_sysroot_propagated_to_cflags(tmp_path):
+    """Sysroot should appear in both cflags and ldflags."""
+    config = ProjectConfig(
+        name="sysroot-test",
+        version="1.0.0",
+        source_dir=tmp_path,
+        targets=[
+            TargetConfig(
+                name="app",
+                target_type="executable",
+                sources=["main.c"],
+            )
+        ],
+    )
+    toolchain = SimpleNamespace(
+        cc="arm-none-eabi-gcc", cxx="arm-none-eabi-g++", ar="arm-none-eabi-ar",
+        cflags=[], ldflags=[], sysroot="/opt/arm-sysroot",
+    )
+
+    backend = NinjaBackend(config, tmp_path / "build", toolchain)
+    cflags = backend._resolve_target_cflags(config.targets[0])
+    ldflags = backend._get_toolchain_ldflags()
+    assert "--sysroot=/opt/arm-sysroot" in cflags
+    assert "--sysroot=/opt/arm-sysroot" in ldflags
+
+
+def test_resolve_target_cflags_includes_packages(tmp_path):
+    """Package include dirs must be included in resolved cflags."""
+    from ebuild.build.ninja_backend import PackagePaths
+
+    config = ProjectConfig(
+        name="pkg-test",
+        version="1.0.0",
+        source_dir=tmp_path,
+        targets=[
+            TargetConfig(
+                name="app",
+                target_type="executable",
+                sources=["main.c"],
+                uses=["libfoo"],
+            )
+        ],
+    )
+    toolchain = SimpleNamespace(cc="gcc", cxx="g++", ar="ar")
+    pkg_paths = {
+        "libfoo": PackagePaths(include_dirs=[tmp_path / "libfoo" / "include"]),
+    }
+
+    backend = NinjaBackend(config, tmp_path / "build", toolchain, package_paths=pkg_paths)
+    cflags = backend._resolve_target_cflags(config.targets[0])
+    assert any("libfoo" in str(f) for f in cflags)

@@ -9,16 +9,21 @@ CMake, Make, Meson, Cargo, Kbuild.
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 TIER_1 = {"make", "kbuild"}
 
 TIER_2 = {"cmake", "meson"}
 
 TIER_3 = {"cargo"}
+
+ALL_BACKENDS = {"cmake", "make", "meson", "cargo", "kbuild", "ninja"}
 
 
 def detect_backend(source_dir: Path) -> str:
@@ -40,6 +45,34 @@ def detect_backend(source_dir: Path) -> str:
     return "ninja"
 
 
+def _run_or_log(
+    cmd: List[str],
+    dry_run: bool,
+    *,
+    check: bool = True,
+    cwd: Optional[str] = None,
+) -> Optional[subprocess.CompletedProcess]:
+    """Run a command or log it in dry-run mode.
+
+    Args:
+        cmd: Command and arguments to execute.
+        dry_run: If True, log the command instead of executing it.
+        check: If True, raise on non-zero exit (passed to subprocess.run).
+        cwd: Working directory for the command.
+
+    Returns:
+        The CompletedProcess result, or None in dry-run mode.
+    """
+    if dry_run:
+        cmd_str = " ".join(cmd)
+        if cwd:
+            logger.info("[dry-run] cd %s && %s", cwd, cmd_str)
+        else:
+            logger.info("[dry-run] %s", cmd_str)
+        return None
+    return subprocess.run(cmd, check=check, cwd=cwd)
+
+
 class BackendDispatcher:
     """Dispatch configure/build/clean to external build systems.
 
@@ -56,8 +89,19 @@ class BackendDispatcher:
         self,
         backend: str,
         config: Optional[Dict[str, Any]] = None,
+        *,
+        dry_run: bool = False,
     ) -> None:
-        """Run the configure step for the given backend."""
+        """Run the configure step for the given backend.
+
+        Args:
+            backend: Build backend name (cmake, meson, cargo, etc.).
+            config: Optional backend-specific configuration dict.
+            dry_run: If True, log commands instead of executing them.
+
+        Raises:
+            ValueError: If the backend is not recognized.
+        """
         config = config or {}
         self.build_dir.mkdir(parents=True, exist_ok=True)
 
@@ -68,14 +112,23 @@ class BackendDispatcher:
                 cmd.extend(["-G", generator])
             for key, val in config.get("defines", {}).items():
                 cmd.append(f"-D{key}={val}")
-            subprocess.run(cmd, check=True)
+            _run_or_log(cmd, dry_run)
 
         elif backend == "meson":
             cmd = ["meson", "setup", str(self.build_dir), str(self.source_dir)]
-            subprocess.run(cmd, check=True)
+            _run_or_log(cmd, dry_run)
 
         elif backend == "cargo":
-            pass
+            pass  # Cargo does not have a separate configure step
+
+        elif backend in ("make", "kbuild", "ninja"):
+            pass  # No separate configure step
+
+        else:
+            raise ValueError(
+                f"Unknown build backend '{backend}'. "
+                f"Supported backends: {', '.join(sorted(ALL_BACKENDS))}"
+            )
 
         else:
             raise RuntimeError(
@@ -90,8 +143,19 @@ class BackendDispatcher:
         self,
         backend: str,
         config: Optional[Dict[str, Any]] = None,
+        *,
+        dry_run: bool = False,
     ) -> None:
-        """Run the build step for the given backend."""
+        """Run the build step for the given backend.
+
+        Args:
+            backend: Build backend name (cmake, make, meson, cargo, kbuild).
+            config: Optional backend-specific configuration dict.
+            dry_run: If True, log commands instead of executing them.
+
+        Raises:
+            ValueError: If the backend is not recognized.
+        """
         config = config or {}
 
         if backend == "cmake":
@@ -99,51 +163,81 @@ class BackendDispatcher:
             jobs = config.get("jobs")
             if jobs:
                 cmd.extend(["-j", str(jobs)])
-            subprocess.run(cmd, check=True)
+            _run_or_log(cmd, dry_run)
 
         elif backend == "make":
             make_cmd = "nmake" if sys.platform == "win32" else "make"
             cmd = [make_cmd, "-C", str(self.source_dir)]
-            subprocess.run(cmd, check=True)
+            _run_or_log(cmd, dry_run)
 
         elif backend == "meson":
             cmd = ["meson", "compile", "-C", str(self.build_dir)]
-            subprocess.run(cmd, check=True)
+            _run_or_log(cmd, dry_run)
 
         elif backend == "cargo":
             cmd = ["cargo", "build"]
             if config.get("release"):
                 cmd.append("--release")
-            subprocess.run(cmd, check=True, cwd=str(self.source_dir))
+            _run_or_log(cmd, dry_run, cwd=str(self.source_dir))
 
         elif backend == "kbuild":
             cmd = ["make", "-C", str(self.source_dir)]
-            subprocess.run(cmd, check=True)
+            _run_or_log(cmd, dry_run)
 
         else:
-            raise RuntimeError(
-                f"BackendDispatcher cannot build backend '{backend}'. "
-                "This dispatcher only handles cmake, make, meson, cargo, "
-                "and kbuild. ebuild's own ninja backend is invoked "
-                "directly and requires 'targets' in build.yaml -- add "
-                "targets or choose another backend."
+            raise ValueError(
+                f"Unknown build backend '{backend}'. "
+                f"Supported backends: {', '.join(sorted(ALL_BACKENDS))}"
             )
 
-    def clean(self, backend: str) -> None:
-        """Run the clean step for the given backend."""
+    def clean(
+        self,
+        backend: str,
+        *,
+        dry_run: bool = False,
+    ) -> None:
+        """Run the clean step for the given backend.
+
+        Args:
+            backend: Build backend name.
+            dry_run: If True, log commands instead of executing them.
+
+        Raises:
+            ValueError: If the backend is not recognized.
+        """
         if backend == "cmake":
-            subprocess.run(
+            _run_or_log(
                 ["cmake", "--build", str(self.build_dir), "--target", "clean"],
+                dry_run,
                 check=False,
             )
         elif backend in ("make", "kbuild"):
-            subprocess.run(
+            _run_or_log(
                 ["make", "-C", str(self.source_dir), "clean"],
+                dry_run,
+                check=False,
+            )
+        elif backend == "meson":
+            _run_or_log(
+                ["meson", "compile", "-C", str(self.build_dir), "--clean"],
+                dry_run,
                 check=False,
             )
         elif backend == "cargo":
-            subprocess.run(
+            _run_or_log(
                 ["cargo", "clean"],
+                dry_run,
                 check=False,
                 cwd=str(self.source_dir),
+            )
+        elif backend == "ninja":
+            _run_or_log(
+                [sys.executable, "-m", "ninja", "-C", str(self.build_dir), "-t", "clean"],
+                dry_run,
+                check=False,
+            )
+        else:
+            raise ValueError(
+                f"Unknown build backend '{backend}'. "
+                f"Supported backends: {', '.join(sorted(ALL_BACKENDS))}"
             )
